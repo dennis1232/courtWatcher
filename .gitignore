@@ -1,0 +1,16 @@
+# Environment — contains secrets (tokens, keys)
+.env
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Data — regenerate with: uv run python scripts/fetch_clubs.py
+data/
+
+# macOS
+.DS_Store
