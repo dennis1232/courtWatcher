@@ -12,6 +12,10 @@ RUN uv sync --frozen --no-dev
 # Copy source
 COPY src/ src/
 COPY scripts/ scripts/
-COPY data/ data/
+
+# Fetch clubs data at build time
+ARG LAZUZ_REFRESH_TOKEN
+ARG LAZUZ_AUTH_TOKEN
+RUN uv run python scripts/fetch_clubs.py
 
 CMD ["uv", "run", "python", "scripts/telegram_bot.py"]
