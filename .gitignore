@@ -9,8 +9,7 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Data — regenerate with: uv run python scripts/fetch_clubs.py
-data/
+# Data files that contain secrets (none currently)
 
 # macOS
 .DS_Store
