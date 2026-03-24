@@ -1,5 +1,6 @@
 """All Telegram command and callback handlers."""
 
+import json
 import logging
 from datetime import date, datetime, timedelta
 
@@ -8,7 +9,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from .constants import COURT_EMOJI, COURT_TYPE_NAMES, WATCHER_MAX_HOURS
-from .clubs import _clubs, club_label
+from .clubs import _clubs, _city_clubs, club_label
 from .formatters import format_hits, format_prices
 from .keyboards import (
     kb_sport, kb_city,
@@ -27,10 +28,12 @@ log = logging.getLogger(__name__)
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     ctx.user_data.pop("flow", None)
+    ctx.user_data.pop("llm_history", None)
+    last_search = ctx.user_data.get("last_search")
     await update.message.reply_text(
         "👋 *Welcome to Lazuz Court Bot!*\n\nWhat sport are you looking for?",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=kb_sport(),
+        reply_markup=kb_sport(last_search),
     )
 
 
@@ -221,7 +224,89 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # ── Restart ───────────────────────────────────────────────────────────────
     if data == "restart":
         ctx.user_data.pop("flow", None)
-        await q.edit_message_text("What sport are you looking for?", reply_markup=kb_sport())
+        await q.edit_message_text("What sport are you looking for?", reply_markup=kb_sport(ctx.user_data.get("last_search")))
+        return
+
+    # ── Repeat last search ────────────────────────────────────────────────────
+    if data == "rl":
+        last = ctx.user_data.get("last_search")
+        if not last:
+            await q.edit_message_text(
+                "No previous search found. What sport are you looking for?",
+                reply_markup=kb_sport(),
+            )
+            return
+        court_type = last["court_type"]
+        selected   = last["selected_clubs"]
+        check_date = last["check_date"]
+        from_time  = last["from_time"]
+        to_time    = last["to_time"]
+        sport      = f"{COURT_EMOJI[court_type]} {COURT_TYPE_NAMES[court_type]}"
+        started    = sum(
+            1 for cid in selected
+            if start_watcher(chat_id, cid, check_date, from_time, to_time, court_type, 10, ctx.bot)[0]
+        )
+        skipped = len(selected) - started
+        msg = (
+            f"👀 *{started} watcher{'s' if started != 1 else ''} restarted!*\n\n"
+            f"{sport}\n📅 {check_date}   🕐 {from_time}–{to_time}\n"
+            f"⏰ Auto-expires in {WATCHER_MAX_HOURS}h."
+        )
+        if skipped:
+            msg += f"\n\n_{skipped} already watched — skipped._"
+        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # ── Back navigation ───────────────────────────────────────────────────────
+    if data.startswith("bk:"):
+        parts = data.split(":", 2)
+        step  = parts[1]
+        flow  = ctx.user_data.get("flow", {})
+
+        if step == "sport":
+            ctx.user_data.pop("flow", None)
+            await q.edit_message_text(
+                "What sport are you looking for?",
+                reply_markup=kb_sport(ctx.user_data.get("last_search")),
+            )
+        elif step == "city":
+            court_type = flow.get("court_type", 3)
+            sport = f"{COURT_EMOJI[court_type]} {COURT_TYPE_NAMES[court_type]}"
+            await q.edit_message_text(
+                f"{sport} — choose a city or area:",
+                reply_markup=kb_city(court_type),
+            )
+        elif step == "clubs":
+            court_type = flow.get("court_type", 3)
+            city_key   = flow.get("city_key", "")
+            selected   = flow.get("selected_clubs", [])
+            text, kb   = clubs_multiselect(court_type, city_key, selected)
+            if not kb:
+                await q.edit_message_text(
+                    "Couldn't reload clubs. Try starting over.",
+                    reply_markup=kb_sport(ctx.user_data.get("last_search")),
+                )
+                return
+            await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+        elif step == "date":
+            court_type = flow.get("court_type", 3)
+            n          = len(flow.get("selected_clubs", []))
+            sport      = f"{COURT_EMOJI[court_type]} {COURT_TYPE_NAMES[court_type]}"
+            await q.edit_message_text(
+                f"{sport} · *{n} club{'s' if n > 1 else ''} selected*\n\nChoose a date:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb_date_guided(),
+            )
+        elif step == "time":
+            court_type = flow.get("court_type", 3)
+            check_date = flow.get("check_date", "")
+            n          = len(flow.get("selected_clubs", []))
+            sport      = f"{COURT_EMOJI[court_type]} {COURT_TYPE_NAMES[court_type]}"
+            await q.edit_message_text(
+                f"{sport} · *{n} club{'s' if n > 1 else ''}* · {check_date}\n\nChoose a time range:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb_time_guided(),
+            )
         return
 
     # ── Step 1: sport ─────────────────────────────────────────────────────────
@@ -323,7 +408,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     # ── Step 6a: Watch all ────────────────────────────────────────────────────
     elif data == "gw":
-        flow       = ctx.user_data.get("flow", {})
+        flow       = ctx.user_data.pop("flow", {})
         court_type = flow["court_type"]
         selected   = flow.get("selected_clubs", [])
         check_date = flow["check_date"]
@@ -335,23 +420,62 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             if start_watcher(chat_id, cid, check_date, from_time, to_time, court_type, 10, ctx.bot)[0]
         )
         skipped = len(selected) - started
-        msg = (
+
+        ctx.user_data["last_search"] = {
+            "court_type": court_type, "selected_clubs": selected,
+            "check_date": check_date, "from_time": from_time, "to_time": to_time,
+        }
+        ctx.user_data.pop("llm_history", None)
+
+        base_msg = (
             f"👀 *{started} watcher{'s' if started != 1 else ''} started!*\n\n"
             f"{sport}\n📅 {check_date}   🕐 {from_time}–{to_time}\n"
             f"⏰ Auto-expires in {WATCHER_MAX_HOURS}h."
         )
         if skipped:
-            msg += f"\n\n_{skipped} club{'s' if skipped > 1 else ''} already watched — skipped._"
-        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
+            base_msg += f"\n\n_{skipped} club{'s' if skipped > 1 else ''} already watched — skipped._"
+
+        await q.edit_message_text(base_msg + "\n\n🔍 Checking current slots…", parse_mode=ParseMode.MARKDOWN)
+
+        check_lines = []
+        for cid in selected[:3]:
+            try:
+                hits = await rate_limited_check(cid, check_date, from_time, to_time, court_type)
+                lbl  = club_label(cid)
+                if hits:
+                    total   = sum(len(h["slots"]) for h in hits)
+                    preview = ", ".join(s[:5] for s in hits[0]["slots"][:3])
+                    if len(hits[0]["slots"]) > 3:
+                        preview += "…"
+                    check_lines.append(f"📍 *{lbl}*: {total} slot{'s' if total != 1 else ''} — {preview}")
+                else:
+                    check_lines.append(f"📍 *{lbl}*: no slots yet")
+            except Exception:
+                check_lines.append(f"📍 *{club_label(cid)}*: couldn't check")
+
+        final_msg = base_msg
+        if check_lines:
+            final_msg += "\n\n*Current availability:*\n" + "\n".join(check_lines)
+            if len(selected) > 3:
+                extra = len(selected) - 3
+                final_msg += f"\n_…and {extra} more club{'s' if extra > 1 else ''} being watched_"
+        await q.edit_message_text(final_msg, parse_mode=ParseMode.MARKDOWN)
 
     # ── Step 6b: Check now ────────────────────────────────────────────────────
     elif data == "gk":
-        flow       = ctx.user_data.get("flow", {})
+        flow       = ctx.user_data.pop("flow", {})
         court_type = flow["court_type"]
         selected   = flow.get("selected_clubs", [])
         check_date = flow["check_date"]
         from_time  = flow["from_time"]
         to_time    = flow["to_time"]
+
+        ctx.user_data["last_search"] = {
+            "court_type": court_type, "selected_clubs": selected,
+            "check_date": check_date, "from_time": from_time, "to_time": to_time,
+        }
+        ctx.user_data.pop("llm_history", None)
+
         await q.edit_message_text(f"🔍 Checking {len(selected)} club{'s' if len(selected) > 1 else ''}…")
         any_hits = False
         for cid in selected:
@@ -536,10 +660,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     flow = ctx.user_data.get("flow")
     if not flow:
-        await update.message.reply_text(
-            "Use /start to begin or /help for all commands.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Start", callback_data="restart")]]),
-        )
+        await handle_llm_message(update, ctx)
         return
 
     text = update.message.text.strip()
@@ -636,6 +757,142 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"📅 {check_date}\n🕐 {from_time} – {to_time}\n\nWhat would you like to do?",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=kb_confirm_legacy(court_type, club_id, check_date, from_time, to_time),
+        )
+
+
+# ---------------------------------------------------------------------------
+# LLM free-text handler
+# ---------------------------------------------------------------------------
+
+async def handle_llm_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Parse a free-text message with Claude (multi-turn) and jump into the guided flow."""
+    from datetime import date as _date, timedelta as _td
+    from .llm import parse_intent_with_history, resolve_clubs
+
+    text     = update.message.text.strip()
+    thinking = await update.message.reply_text("🤔 Let me figure that out…")
+
+    # ── Build conversation history (improvement #4: multi-turn) ──────────────
+    today    = _date.today()
+    user_msg = f"Today is {today.isoformat()} ({today.strftime('%A')}). User message: {text}"
+    history: list[dict] = ctx.user_data.get("llm_history", [])
+    history.append({"role": "user", "content": user_msg})
+
+    try:
+        intent = await parse_intent_with_history(history[-6:])  # last 3 exchanges
+    except Exception as e:
+        log.warning("LLM parse failed: %s", e)
+        await thinking.edit_text(
+            "I couldn't understand that. Use /start for the guided flow or /help for commands.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚀 Start", callback_data="restart"),
+            ]]),
+        )
+        return
+
+    # Save assistant turn to history
+    history.append({"role": "assistant", "content": json.dumps(intent)})
+    ctx.user_data["llm_history"] = history[-6:]
+
+    # ── Improvement #1: non-booking intent ────────────────────────────────────
+    if intent.get("intent") == "other":
+        reply = intent.get("reply") or "Use /start to search for courts or /help for all commands."
+        await thinking.edit_text(
+            reply,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚀 Start", callback_data="restart"),
+            ]]),
+        )
+        return
+
+    court_type   = int(intent.get("court_type") or 3)
+    club_query   = intent.get("club_query")
+    check_date   = intent.get("date")
+    from_time    = intent.get("from_time")
+    to_time      = intent.get("to_time")
+    city_key_llm = (intent.get("city_key") or "").strip()
+
+    # Normalise date aliases
+    if check_date == "today":
+        check_date = _date.today().isoformat()
+    elif check_date == "tomorrow":
+        check_date = (_date.today() + _td(days=1)).isoformat()
+
+    sport = f"{COURT_EMOJI.get(court_type, '🏟')} {COURT_TYPE_NAMES.get(court_type, '')}"
+
+    # ── Club resolution ───────────────────────────────────────────────────────
+    # If Claude gave a city_key and no specific club query → show club picker for that city
+    city_only = city_key_llm and city_key_llm in _city_clubs and not club_query
+
+    if city_only:
+        clubs    = []
+        city_key = city_key_llm
+    else:
+        # Fuzzy search, optionally scoped to the city Claude identified
+        clubs    = resolve_clubs(club_query, city_key=city_key_llm or None)
+        city_key = clubs[0]["city_key"] if clubs else city_key_llm
+
+    sel_ids = [c["id"] for c in clubs]
+
+    # Pre-fill flow with everything extracted so far
+    flow: dict = {"court_type": court_type, "city_key": city_key, "selected_clubs": sel_ids}
+    if check_date:
+        flow["check_date"] = check_date
+    if from_time and to_time:
+        flow["from_time"] = from_time
+        flow["to_time"]   = to_time
+    ctx.user_data["flow"] = flow
+
+    # ── All info present → summary + action buttons ───────────────────────────
+    if clubs and check_date and from_time and to_time:
+        clubs_lines = []
+        for c in clubs[:5]:
+            name   = (c.get("name_english") or c.get("name", "")).strip()
+            rating = c.get("rating")
+            clubs_lines.append(f"📍 {name}" + (f" ⭐{rating}" if rating else ""))
+        n       = len(sel_ids)
+        summary = (
+            f"*Got it!*\n\n{sport}\n"
+            + "\n".join(clubs_lines)
+            + f"\n📅 {check_date}   🕐 {from_time}–{to_time}\n\n"
+              f"{'1 club' if n == 1 else f'{n} clubs'} · What would you like to do?"
+        )
+        await thinking.edit_text(summary, parse_mode=ParseMode.MARKDOWN, reply_markup=kb_confirm_guided())
+        return
+
+    # ── City identified, no specific club → club multi-select ─────────────────
+    if city_only:
+        text_msg, kb = clubs_multiselect(court_type, city_key, [])
+        if kb:
+            await thinking.edit_text(text_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            return
+
+    # ── Partial info → drop at the first missing step ─────────────────────────
+    if not clubs:
+        await thinking.edit_text(
+            f"{sport} — I couldn't find *{club_query or 'that club'}*. Choose a city:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_city(court_type),
+        )
+    elif not check_date:
+        n = len(sel_ids)
+        await thinking.edit_text(
+            f"{sport} · *{n} club{'s' if n > 1 else ''} selected*\n\nChoose a date:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_date_guided(),
+        )
+    elif not from_time or not to_time:
+        n = len(sel_ids)
+        await thinking.edit_text(
+            f"{sport} · *{n} club{'s' if n > 1 else ''}* · {check_date}\n\nChoose a time range:",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=kb_time_guided(),
+        )
+    else:
+        ctx.user_data.pop("flow", None)
+        await thinking.edit_text(
+            "What sport are you looking for?",
+            reply_markup=kb_sport(ctx.user_data.get("last_search")),
         )
 
 

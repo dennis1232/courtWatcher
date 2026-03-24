@@ -1,6 +1,6 @@
 """Inline keyboard builders for every step of the guided flow."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -12,12 +12,22 @@ from .clubs import _clubs, _city_clubs, _city_display, _city_order
 # Sport / city pickers
 # ---------------------------------------------------------------------------
 
-def kb_sport() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def kb_sport(last_search: dict | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(f"{COURT_EMOJI[ct]} {COURT_TYPE_NAMES[ct]}", callback_data=f"fs:{ct}")
          for ct in COURT_TYPE_NAMES],
         [InlineKeyboardButton("📋 My Watchers", callback_data="my_watchers")],
-    ])
+    ]
+    if last_search:
+        ct    = last_search.get("court_type", 3)
+        sport = f"{COURT_EMOJI.get(ct, '')} {COURT_TYPE_NAMES.get(ct, '')}"
+        n     = len(last_search.get("selected_clubs", []))
+        label = (
+            f"🔁 {sport} · {n} club{'s' if n != 1 else ''} · "
+            f"{last_search.get('from_time', '')}–{last_search.get('to_time', '')}"
+        )
+        rows.insert(0, [InlineKeyboardButton(label, callback_data="rl")])
+    return InlineKeyboardMarkup(rows)
 
 
 def kb_city(court_type: int, expanded: bool = False) -> InlineKeyboardMarkup:
@@ -36,6 +46,7 @@ def kb_city(court_type: int, expanded: bool = False) -> InlineKeyboardMarkup:
             f"➕ Show all cities ({len(_city_order)})",
             callback_data=f"fx:{court_type}",
         )])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"bk:sport:{court_type}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -71,7 +82,10 @@ def clubs_multiselect(court_type: int, city_key: str,
         rows.append([InlineKeyboardButton(f"✅ Done ({n} selected)", callback_data="fbd")])
     else:
         rows.append([InlineKeyboardButton("— select at least one club —", callback_data="noop")])
-    rows.append([InlineKeyboardButton("🔄 Start over", callback_data="restart")])
+    rows.append([
+        InlineKeyboardButton("⬅️ Back", callback_data="bk:city"),
+        InlineKeyboardButton("🔄 Start over", callback_data="restart"),
+    ])
 
     return header, InlineKeyboardMarkup(rows)
 
@@ -115,16 +129,33 @@ def kb_date_guided() -> InlineKeyboardMarkup:
         [btn(f"{day2.strftime('%A %d/%m')}",                day2),
          btn(f"{day3.strftime('%A %d/%m')}",                day3)],
         [InlineKeyboardButton("📅 Other date…", callback_data="gdx")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="bk:clubs")],
     ])
 
 
 def kb_time_guided() -> InlineKeyboardMarkup:
+    hour = datetime.now().hour
+    if hour < 12:
+        presets = [
+            ("🌅 07:00–10:00", "07:00", "10:00"),
+            ("☀️ 10:00–13:00", "10:00", "13:00"),
+            ("🌤 13:00–17:00", "13:00", "17:00"),
+            ("🌆 17:00–21:00", "17:00", "21:00"),
+        ]
+    else:
+        presets = [
+            ("🌆 17:00–19:00", "17:00", "19:00"),
+            ("🌇 19:00–21:00", "19:00", "21:00"),
+            ("🌆 17:00–21:00", "17:00", "21:00"),
+            ("📆 Full day 06–23", "06:00", "23:00"),
+        ]
     rows = []
-    for label, frm, to in TIME_PRESETS:
+    for label, frm, to in presets:
         fh, fm = frm.split(":")
         th, tm = to.split(":")
         rows.append([InlineKeyboardButton(label, callback_data=f"gtp:{fh}:{fm}:{th}:{tm}")])
     rows.append([InlineKeyboardButton("✏️ Custom time…", callback_data="gtx")])
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="bk:date")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -134,7 +165,10 @@ def kb_confirm_guided() -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"👀 Watch ({WATCHER_MAX_HOURS}h)", callback_data="gw"),
             InlineKeyboardButton("🔍 Check now",                     callback_data="gk"),
         ],
-        [InlineKeyboardButton("🔄 Start over", callback_data="restart")],
+        [
+            InlineKeyboardButton("⬅️ Back", callback_data="bk:time"),
+            InlineKeyboardButton("🔄 Start over", callback_data="restart"),
+        ],
     ])
 
 
