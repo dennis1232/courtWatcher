@@ -1,7 +1,10 @@
 """Shared constants for the Lazuz Telegram bot."""
 
-COURT_TYPE_NAMES: dict[int, str] = {3: "Tennis", 6: "Football", 10: "Pickleball"}
-COURT_EMOJI:      dict[int, str] = {3: "🎾",     6: "⚽",        10: "🏓"}
+COURT_TYPE_NAMES: dict[int, str] = {3: "Tennis", 6: "Football", 9: "Padel", 10: "Pickleball"}
+COURT_EMOJI:      dict[int, str] = {3: "🎾",     6: "⚽",       9: "🎾",   10: "🏓"}
+
+DEFAULT_COURT_TYPE = 3  # Tennis fallback
+SELECTABLE_SPORTS = [3, 9]  # Tennis + Padel only
 DAYS_LAZUZ:       dict[int, str] = {
     0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"
 }

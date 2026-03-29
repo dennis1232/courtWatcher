@@ -63,7 +63,7 @@ def invalidate_clubs_cache() -> None:
 _SYSTEM_PROMPT_STATIC = """\
 Court booking assistant for Israel. Hebrew+English. Return JSON only, no prose.
 
-Sports: Tennis=3, Football/Soccer=6, Pickleball=10 (default=3)
+Sports: Tennis=3, Football/Soccer=6, Padel/פאדל=9, Pickleball=10 (default=3)
 Action: watch(עקוב/התרע/alert) or check(בדוק/האם יש/show), default=watch
 Time: בוקר=07-12, צהריים=12-16, אחה"צ=14-18, ערב=17-21, לילה=20-23
 Dates: היום=today, מחר=tomorrow, day name→next YYYY-MM-DD
@@ -83,7 +83,7 @@ User: "שלום"
 {"intent":"other","reply":"היי! ספר לי איפה ומתי ואמצא לך מגרש פנוי.","action":"watch","court_type":3,"club_query":null,"city_key":null,"date":null,"from_time":null,"to_time":null,"missing":["club","date","time"]}
 
 Schema (all keys required, null or [] when absent):
-{"intent":"booking|other","reply":"null unless other","action":"watch|check","court_type":3|6|10,"club_query":"exact words user used for club/address, or null","city_key":"exact key from list below or null","date":"YYYY-MM-DD|today|tomorrow|null","from_time":"HH:MM|null","to_time":"HH:MM|null","missing":["club","date","time"]}
+{"intent":"booking|other","reply":"null unless other","action":"watch|check","court_type":3|6|9|10,"club_query":"exact words user used for club/address, or null","city_key":"exact key from list below or null","date":"YYYY-MM-DD|today|tomorrow|null","from_time":"HH:MM|null","to_time":"HH:MM|null","missing":["club","date","time"]}
 
 Rules:
 - club_query = the club name or address the user mentioned (keep their exact words)

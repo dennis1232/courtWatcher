@@ -15,10 +15,52 @@ _city_display: dict[str, str]        = {}   # normalised city key → display na
 _city_order:   list[str]             = []   # cities in display order (Tel Aviv first)
 
 
+_AREA_MAP: list[tuple[str, list[str]]] = [
+    ("Tel Aviv Area", [
+        "tel aviv", "תל אביב", "jaffa", "yafo",
+        "ramat gan", "רמת גן",
+        "holon", "חולון",
+        "bat yam", "בת ים",
+        "givat shmuel",
+        "ramat hasharon", "רמת השרון",
+        "kiryat ono",
+        "beit dagan",
+        "azur", "azor",
+        "ramat efal",
+        "beer yaakov",
+    ]),
+    ("Rishon Area", [
+        "rishon", "ראשון",
+        "ness ziona", "נס ציונה",
+        "rehovot", "רחובות",
+        "yavne", "יבנה",
+        "gedera", "mazkeret batya",
+        "givat brener", "givat brenner", "גבעת ברנר",
+    ]),
+    ("Sharon", [
+        "herzliya", "הרצליה", "herzeliya",
+        "kfar saba", "כפר סבא",
+        "raanana", "ra'anana", "רעננה",
+        "netanya", "נתניה", "natanya",
+        "hadera", "חדרה",
+        "kochav yair", "tzur yitzhak",
+        "kfar shmaryahu", "rishpon",
+        "givat ada", "givat hen",
+    ]),
+    ("Jerusalem Area", [
+        "jerusalem", "ירושלים",
+        "ma'ale adumim", "מעלה אדומים",
+        "tzur hadassah",
+        "abu gosh",
+    ]),
+]
+
+
 def _norm_city(raw: str) -> str:
     c = raw.strip().lower()
-    if "tel aviv" in c or "תל אביב" in c or "jaffa" in c:
-        return "tel_aviv"
+    for area_name, keywords in _AREA_MAP:
+        if any(kw in c for kw in keywords):
+            return area_name.lower().replace(" ", "_")
     return c.replace(" ", "_")[:20]
 
 
@@ -38,12 +80,13 @@ def load_clubs() -> None:
         _city_clubs.setdefault(key, []).append(club)
 
         if key not in _city_display:
-            _city_display[key] = "Tel Aviv" if key == "tel_aviv" else raw_city.strip().title()
+            area_match = next((name for name, _ in _AREA_MAP if name.lower().replace(" ", "_") == key), None)
+            _city_display[key] = area_match if area_match else raw_city.strip().title()
 
-    other = sorted(k for k in _city_clubs if k != "tel_aviv")
+    priority = ["tel_aviv_area", "rishon_area", "sharon", "jerusalem_area"]
+    other = sorted(k for k in _city_clubs if k not in priority)
     _city_order.clear()
-    if "tel_aviv" in _city_clubs:
-        _city_order.append("tel_aviv")
+    _city_order.extend(k for k in priority if k in _city_clubs)
     _city_order.extend(other)
 
     log.info("Loaded %d clubs across %d cities", len(_clubs), len(_city_order))

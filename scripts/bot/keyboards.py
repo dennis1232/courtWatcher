@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .constants import COURT_EMOJI, COURT_TYPE_NAMES, TIME_PRESETS, WATCHER_MAX_HOURS
+from .constants import COURT_EMOJI, COURT_TYPE_NAMES, TIME_PRESETS, WATCHER_MAX_HOURS, SELECTABLE_SPORTS
 from .clubs import _clubs, _city_clubs, _city_display, _city_order
 
 
@@ -15,7 +15,7 @@ from .clubs import _clubs, _city_clubs, _city_display, _city_order
 def kb_sport(last_search: dict | None = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(f"{COURT_EMOJI[ct]} {COURT_TYPE_NAMES[ct]}", callback_data=f"fs:{ct}")
-         for ct in COURT_TYPE_NAMES],
+         for ct in SELECTABLE_SPORTS],
         [InlineKeyboardButton("📋 My Watchers", callback_data="my_watchers")],
     ]
     if last_search:
@@ -31,7 +31,9 @@ def kb_sport(last_search: dict | None = None) -> InlineKeyboardMarkup:
 
 
 def kb_city(court_type: int, expanded: bool = False) -> InlineKeyboardMarkup:
-    cities = _city_order if expanded else _city_order[:10]
+    # Only show cities that have at least one club for this sport
+    all_cities = [k for k in _city_order if _filter_by_sport(_city_clubs.get(k, []), court_type)]
+    cities = all_cities if expanded else all_cities[:10]
     rows, row = [], []
     for key in cities:
         display = _city_display.get(key, key)
@@ -41,9 +43,9 @@ def kb_city(court_type: int, expanded: bool = False) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    if not expanded and len(_city_order) > 10:
+    if not expanded and len(all_cities) > 10:
         rows.append([InlineKeyboardButton(
-            f"➕ Show all cities ({len(_city_order)})",
+            f"➕ Show all cities ({len(all_cities)})",
             callback_data=f"fx:{court_type}",
         )])
     rows.append([InlineKeyboardButton("⬅️ Back", callback_data=f"bk:sport:{court_type}")])
@@ -54,9 +56,23 @@ def kb_city(court_type: int, expanded: bool = False) -> InlineKeyboardMarkup:
 # Club picker — multi-select (guided flow)
 # ---------------------------------------------------------------------------
 
+def _filter_by_sport(clubs: list[dict], court_type: int) -> list[dict]:
+    """Keep clubs that have the given court_type, or have no rent_rates (external API clubs)."""
+    result = []
+    for c in clubs:
+        rates = c.get("rent_rates")
+        if not isinstance(rates, list):
+            # rent_rates=false — external API club, include only for tennis
+            if court_type == 3:
+                result.append(c)
+        elif any(r.get("court_type_id") == court_type for r in rates):
+            result.append(c)
+    return result
+
+
 def clubs_multiselect(court_type: int, city_key: str,
                       selected_ids: list[int]) -> tuple[str, InlineKeyboardMarkup] | tuple[None, None]:
-    clubs = _city_clubs.get(city_key, [])
+    clubs = _filter_by_sport(_city_clubs.get(city_key, []), court_type)
     if not clubs:
         return None, None
 
@@ -95,7 +111,7 @@ def clubs_multiselect(court_type: int, city_key: str,
 # ---------------------------------------------------------------------------
 
 def clubs_single(court_type: int, city_key: str) -> tuple[str, InlineKeyboardMarkup] | tuple[None, None]:
-    clubs = _city_clubs.get(city_key, [])
+    clubs = _filter_by_sport(_city_clubs.get(city_key, []), court_type)
     if not clubs:
         return None, None
     sorted_clubs = sorted(clubs, key=lambda c: -(c.get("rating") or 0))

@@ -8,7 +8,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from .constants import COURT_EMOJI, COURT_TYPE_NAMES, WATCHER_MAX_HOURS
+from .constants import COURT_EMOJI, COURT_TYPE_NAMES, WATCHER_MAX_HOURS, DEFAULT_COURT_TYPE
 from .clubs import _clubs, _city_clubs, club_label
 from .formatters import format_hits, format_prices
 from .keyboards import (
@@ -31,7 +31,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     ctx.user_data.pop("llm_history", None)
     last_search = ctx.user_data.get("last_search")
     await update.message.reply_text(
-        "👋 *Welcome to Lazuz Court Bot!*\n\nWhat sport are you looking for?",
+        "👋 *Welcome to Lazuz Court Bot!*\n\nWhat are you looking for?",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=kb_sport(last_search),
     )
@@ -224,7 +224,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # ── Restart ───────────────────────────────────────────────────────────────
     if data == "restart":
         ctx.user_data.pop("flow", None)
-        await q.edit_message_text("What sport are you looking for?", reply_markup=kb_sport(ctx.user_data.get("last_search")))
+        await q.edit_message_text("What are you looking for?", reply_markup=kb_sport(ctx.user_data.get("last_search")))
         return
 
     # ── Repeat last search ────────────────────────────────────────────────────
@@ -630,16 +630,43 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                     parse_mode=ParseMode.MARKDOWN,
                 )
         else:
-            await q.edit_message_reply_markup(reply_markup=None)
-            await q.message.reply_text(
-                f"{'👀 Watch' if action == 'w' else '🔍 Check'} *{club_label(club_id)}*\n\nChoose sport:",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(f"{COURT_EMOJI[ct]} {COURT_TYPE_NAMES[ct]}",
-                                         callback_data=f"spt:{club_id}:{action}:{ct}")
-                    for ct in COURT_TYPE_NAMES
-                ]]),
-            )
+            # Detect which sports this club actually offers
+            from .constants import SELECTABLE_SPORTS
+            club      = _clubs.get(club_id, {})
+            rates     = club.get("rent_rates")
+            if isinstance(rates, list):
+                available = [ct for ct in SELECTABLE_SPORTS
+                             if any(r.get("court_type_id") == ct for r in rates)]
+            else:
+                available = [3]  # external API club — assume tennis
+
+            if len(available) == 1:
+                # Only one sport — skip picker, go straight to time
+                ctx.user_data["flow"] = {
+                    "awaiting": "time_range",
+                    "court_type": available[0],
+                    "club_id": club_id,
+                    "check_date": (date.today() + timedelta(days=1)).isoformat(),
+                    "action": action,
+                }
+                sport = f"{COURT_EMOJI[available[0]]} {COURT_TYPE_NAMES[available[0]]}"
+                await q.edit_message_reply_markup(reply_markup=None)
+                await q.message.reply_text(
+                    f"{'👀 Watch' if action == 'w' else '🔍 Check'} *{club_label(club_id)}* ({sport})\n\n"
+                    f"Type your time range:\n`HH:MM - HH:MM`  e.g. `17:00 - 20:00`",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await q.edit_message_reply_markup(reply_markup=None)
+                await q.message.reply_text(
+                    f"{'👀 Watch' if action == 'w' else '🔍 Check'} *{club_label(club_id)}*\n\nChoose sport:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(f"{COURT_EMOJI[ct]} {COURT_TYPE_NAMES[ct]}",
+                                             callback_data=f"spt:{club_id}:{action}:{ct}")
+                        for ct in available
+                    ]]),
+                )
 
     elif data.startswith("spt:"):
         _, club_id_s, action, ct_s = data.split(":")
