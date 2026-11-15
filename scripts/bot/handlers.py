@@ -1,6 +1,6 @@
 """All Telegram command and callback handlers."""
 
-import json
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 
@@ -8,13 +8,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from .constants import COURT_EMOJI, COURT_TYPE_NAMES, WATCHER_MAX_HOURS, DEFAULT_COURT_TYPE
+from .constants import COURT_EMOJI, COURT_TYPE_NAMES, WATCHER_MAX_HOURS
 from .clubs import _clubs, _city_clubs, club_label
 from .formatters import format_hits, format_prices
 from .keyboards import (
     kb_sport, kb_city,
-    clubs_multiselect, clubs_single,
-    kb_date_guided, kb_time_guided, kb_confirm_guided, show_confirmation_guided,
+    clubs_multiselect, kb_date_guided, kb_time_guided, kb_confirm_guided, show_confirmation_guided,
     kb_date_legacy, kb_time_legacy, kb_confirm_legacy,
 )
 from .watchers import _watchers, rate_limited_check, start_watcher
@@ -28,7 +27,6 @@ log = logging.getLogger(__name__)
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     ctx.user_data.pop("flow", None)
-    ctx.user_data.pop("llm_history", None)
     last_search = ctx.user_data.get("last_search")
     await update.message.reply_text(
         "👋 *Welcome to Lazuz Court Bot!*\n\nWhat are you looking for?",
@@ -425,7 +423,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "court_type": court_type, "selected_clubs": selected,
             "check_date": check_date, "from_time": from_time, "to_time": to_time,
         }
-        ctx.user_data.pop("llm_history", None)
 
         base_msg = (
             f"👀 *{started} watcher{'s' if started != 1 else ''} started!*\n\n"
@@ -474,7 +471,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "court_type": court_type, "selected_clubs": selected,
             "check_date": check_date, "from_time": from_time, "to_time": to_time,
         }
-        ctx.user_data.pop("llm_history", None)
 
         await q.edit_message_text(f"🔍 Checking {len(selected)} club{'s' if len(selected) > 1 else ''}…")
         any_hits = False
@@ -792,135 +788,96 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 
 async def handle_llm_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Parse a free-text message with Claude (multi-turn) and jump into the guided flow."""
-    from datetime import date as _date, timedelta as _td
-    from .llm import parse_intent_with_history, resolve_clubs
+    """Understand a free-text message with the Gemini Decisions API and jump into the guided flow.
+
+    The API only chooses among fixed options; anything missing is asked with the existing
+    button steps (city → clubs → date → time), never with a free-form question.
+    """
+    from .constants import SPORT_CODES
+    from .decide import TIMEOUT, decide
 
     text     = update.message.text.strip()
+    chat_id  = update.effective_chat.id
     thinking = await update.message.reply_text("🤔 Let me figure that out…")
-
-    # ── Build conversation history (improvement #4: multi-turn) ──────────────
-    today    = _date.today()
-    user_msg = f"Today is {today.isoformat()} ({today.strftime('%A')}). User message: {text}"
-    history: list[dict] = ctx.user_data.get("llm_history", [])
-    history.append({"role": "user", "content": user_msg})
+    active   = {k: t for k, t in _watchers.get(chat_id, {}).items() if not t.done()}
+    labels   = {k: f"{club_label(int(k.split('_')[0]))} {k.split('_')[1]}–{k.split('_')[2]} {k.split('_')[3]}" for k in active}
 
     try:
-        intent = await parse_intent_with_history(history[-6:])  # last 3 exchanges
-    except Exception as e:
-        log.warning("LLM parse failed: %s", e)
+        d = await asyncio.wait_for(decide(text, watches=labels or None), 2 * TIMEOUT)  # ≤2 calls
+    except Exception as e:  # incl. timeout: the beta API's slow tail → fall back to the buttons
+        log.warning("Decision failed: %r", e)
         await thinking.edit_text(
-            "I couldn't understand that. Use /start for the guided flow or /help for commands.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🚀 Start", callback_data="restart"),
-            ]]),
+            "I couldn't work that out right now — use the buttons instead.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Start", callback_data="restart")]]),
         )
         return
 
-    # Save assistant turn to history
-    history.append({"role": "assistant", "content": json.dumps(intent)})
-    ctx.user_data["llm_history"] = history[-6:]
-
-    # ── Improvement #1: non-booking intent ────────────────────────────────────
-    if intent.get("intent") == "other":
-        reply = intent.get("reply") or "Use /start to search for courts or /help for all commands."
+    if d.action == "list_watches":
+        await thinking.delete()
+        await cmd_status(update, ctx)
+        return
+    if d.action == "stop_watch":
+        keys = list(active) if d.stop_target in (None, "all") else [k for k in active if k == d.stop_target]
+        for k in keys:
+            active[k].cancel()
+            _watchers[chat_id].pop(k, None)
+        await thinking.edit_text(f"Stopped {len(keys)} watcher(s)." if keys else "No active watchers.")
+        return
+    if d.action == "chit_chat":
         await thinking.edit_text(
-            reply,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🚀 Start", callback_data="restart"),
-            ]]),
+            "Tell me where and when (e.g. “טניס בתל אביב מחר בערב”) and I'll find a free court.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Start", callback_data="restart")]]),
         )
         return
 
-    court_type   = int(intent.get("court_type") or 3)
-    club_query   = intent.get("club_query")
-    check_date   = intent.get("date")
-    from_time    = intent.get("from_time")
-    to_time      = intent.get("to_time")
-    city_key_llm = (intent.get("city_key") or "").strip()
+    court_type = SPORT_CODES[d.sport]
+    sport      = f"{COURT_EMOJI.get(court_type, '🏟')} {COURT_TYPE_NAMES.get(court_type, '')}"
+    sel_ids    = [c["id"] for c in d.clubs] if d.named else []
+    city_key   = d.city_key if d.city_key in _city_clubs else None
+    notes      = "".join(f"⚠️ {(c.get('name') or '').strip()} is no longer on Lazuz — phone {c.get('phone') or 'n/a'}\n"
+                         for c in d.retired)
 
-    # Normalise date aliases
-    if check_date == "today":
-        check_date = _date.today().isoformat()
-    elif check_date == "tomorrow":
-        check_date = (_date.today() + _td(days=1)).isoformat()
-
-    sport = f"{COURT_EMOJI.get(court_type, '🏟')} {COURT_TYPE_NAMES.get(court_type, '')}"
-
-    # ── Club resolution ───────────────────────────────────────────────────────
-    # If Claude gave a city_key and no specific club query → show club picker for that city
-    city_only = city_key_llm and city_key_llm in _city_clubs and not club_query
-
-    if city_only:
-        clubs    = []
-        city_key = city_key_llm
-    else:
-        # Fuzzy search, optionally scoped to the city Claude identified
-        clubs    = resolve_clubs(club_query, city_key=city_key_llm or None)
-        city_key = clubs[0]["city_key"] if clubs else city_key_llm
-
-    sel_ids = [c["id"] for c in clubs]
-
-    # Pre-fill flow with everything extracted so far
     flow: dict = {"court_type": court_type, "city_key": city_key, "selected_clubs": sel_ids}
-    if check_date:
-        flow["check_date"] = check_date
-    if from_time and to_time:
-        flow["from_time"] = from_time
-        flow["to_time"]   = to_time
+    if d.date:
+        flow["check_date"] = d.date
+    if d.frm and d.to:
+        flow["from_time"], flow["to_time"] = d.frm, d.to
     ctx.user_data["flow"] = flow
 
-    # ── All info present → summary + action buttons ───────────────────────────
-    if clubs and check_date and from_time and to_time:
-        clubs_lines = []
-        for c in clubs[:5]:
-            name   = (c.get("name_english") or c.get("name", "")).strip()
-            rating = c.get("rating")
-            clubs_lines.append(f"📍 {name}" + (f" ⭐{rating}" if rating else ""))
-        n       = len(sel_ids)
-        summary = (
-            f"*Got it!*\n\n{sport}\n"
-            + "\n".join(clubs_lines)
-            + f"\n📅 {check_date}   🕐 {from_time}–{to_time}\n\n"
-              f"{'1 club' if n == 1 else f'{n} clubs'} · What would you like to do?"
-        )
-        await thinking.edit_text(summary, parse_mode=ParseMode.MARKDOWN, reply_markup=kb_confirm_guided())
+    # Fixed question: where → city buttons
+    if d.ask == "where" or (not sel_ids and not city_key):
+        await thinking.edit_text(f"{notes}{sport} — where should I look?", reply_markup=kb_city(court_type))
         return
-
-    # ── City identified, no specific club → club multi-select ─────────────────
-    if city_only:
-        text_msg, kb = clubs_multiselect(court_type, city_key, [])
+    # City or area only → club picker, with the clubs in that place pre-ticked (Done goes straight on)
+    if not sel_ids:
+        offered = {c["id"] for c in _city_clubs.get(city_key, []) if court_type in c.get("court_types", [court_type])}
+        flow["selected_clubs"] = [c["id"] for c in d.clubs if c["id"] in offered]
+        text_msg, kb = clubs_multiselect(court_type, city_key, flow["selected_clubs"])
         if kb:
-            await thinking.edit_text(text_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
+            await thinking.edit_text(notes + text_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
             return
-
-    # ── Partial info → drop at the first missing step ─────────────────────────
-    if not clubs:
-        await thinking.edit_text(
-            f"{sport} — I couldn't find *{club_query or 'that club'}*. Choose a city:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb_city(court_type),
-        )
-    elif not check_date:
-        n = len(sel_ids)
-        await thinking.edit_text(
-            f"{sport} · *{n} club{'s' if n > 1 else ''} selected*\n\nChoose a date:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb_date_guided(),
-        )
-    elif not from_time or not to_time:
-        n = len(sel_ids)
-        await thinking.edit_text(
-            f"{sport} · *{n} club{'s' if n > 1 else ''}* · {check_date}\n\nChoose a time range:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=kb_time_guided(),
-        )
-    else:
-        ctx.user_data.pop("flow", None)
-        await thinking.edit_text(
-            "What sport are you looking for?",
-            reply_markup=kb_sport(ctx.user_data.get("last_search")),
-        )
+    n = len(sel_ids)
+    # Fixed question: day → date buttons
+    if d.ask == "day" or not d.date or len(d.dates) > 1:  # "next week" → let the user pick the day
+        await thinking.edit_text(f"{notes}{sport} · *{n} club{'s' if n > 1 else ''} selected*\n\nChoose a date:",
+                                 parse_mode=ParseMode.MARKDOWN, reply_markup=kb_date_guided())
+        return
+    # Fixed question: time → time-range buttons
+    if d.ask == "time" or not (d.frm and d.to):
+        await thinking.edit_text(f"{notes}{sport} · *{n} club{'s' if n > 1 else ''}* · {d.date}\n\nChoose a time range:",
+                                 parse_mode=ParseMode.MARKDOWN, reply_markup=kb_time_guided())
+        return
+    # Everything known → summary + Check now / Watch buttons
+    clubs_lines = []
+    for c in d.clubs[:5]:
+        name, rating = (c.get("name_english") or c.get("name", "")).strip(), c.get("rating")
+        clubs_lines.append(f"📍 {name}" + (f" ⭐{rating}" if rating else ""))
+    hint = "\n_You asked me to watch — tap Watch._" if d.action == "watch" else ""
+    await thinking.edit_text(
+        f"{notes}*Got it!*\n\n{sport}\n" + "\n".join(clubs_lines)
+        + f"\n📅 {d.date}   🕐 {d.frm}–{d.to}\n\n{'1 club' if n == 1 else f'{n} clubs'} · What would you like to do?{hint}",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=kb_confirm_guided(),
+    )
 
 
 # ---------------------------------------------------------------------------

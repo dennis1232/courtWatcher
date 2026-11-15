@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bin/find-court:*)",
+      "Bash(uv sync:*)",
+      "Bash(ruff check:*)",
+      "Bash(uv run pytest:*)"
+    ]
+  }
+}

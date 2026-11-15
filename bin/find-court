@@ -1,0 +1,6 @@
+#!/bin/sh
+# Free-text court search: bin/find-court "<request>" [flags]. Uses uv when on PATH, else the project venv.
+cd "$(dirname "$0")/.." || exit 1
+if command -v uv >/dev/null 2>&1; then exec uv run scripts/find_court.py "$@"; fi
+[ -x .venv/bin/python ] || { echo "Run 'uv sync' first (no uv on PATH and no .venv)." >&2; exit 1; }
+exec .venv/bin/python scripts/find_court.py "$@"

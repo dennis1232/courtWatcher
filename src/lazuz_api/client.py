@@ -147,16 +147,18 @@ class LazuzClient:
         duration: int = 60,
         court_type: int = 3,
         external_club_id: int | None = None,
+        resolve_external: bool = True,
     ) -> dict:
         """Available time slots per court for a club on a date.
 
-        Automatically resolves external_club_id via club-settings if needed.
+        Automatically resolves external_club_id via club-settings if needed
+        (2 extra requests; pass resolve_external=False when it is already known).
         Some clubs (e.g. 55) use an external booking system — the server returns
         a different club_id in settings which must be passed as external_club_id.
 
         Returns: {"courts": [{"courtId", "name", "prices", "availbleTimeSlot"}, ...]}
         """
-        if external_club_id is None:
+        if external_club_id is None and resolve_external:
             external_club_id = await self._resolve_external_club_id(club_id)
 
         params: dict = {

@@ -1,0 +1,43 @@
+"""Decision cases: user message -> accepted outcomes (+ key values). Clock: Mon 2026-11-16 10:00 Asia/Jerusalem."""
+NOW = "Monday 2026-11-16 10:00 (Asia/Jerusalem)"
+S, W, STOP, LIST, NONE = "search_courts", "start_watch", "stop_watch", "list_watches", None
+
+# (message, accepted tools, expected args subset; places = substrings that must appear in some place)
+CASES = [
+    ("מגרש טניס בתל אביב מחר בערב", {S}, dict(date="2026-11-17", **{"from": "17:00", "to": "21:00"}, places=["תל אביב|tel aviv"])),
+    ("תעקוב לי אחרי מגרש ברוקח ביום שלישי בין 18 ל-20", {W}, dict(date="2026-11-17", **{"from": "18:00", "to": "20:00"}, places=["רוקח|rokach|rokah"])),
+    ("אם אין כלום תודיע לי כשמתפנה משהו בהדר יוסף מחר ב-19", {W}, dict(date="2026-11-17", **{"from": "19:00"}, places=["הדר יוסף|hadar yosef"])),
+    ("תפסיק לעקוב", {STOP}, {}),
+    ("מה המצב עם המעקב?", {LIST}, {}),
+    ("יש משהו פנוי היום?", {"ask:where"}, {}),
+    ("שלום", {NONE}, {}),
+    ("פאדל ברמת גן מחרתיים אחרי 19 לשעה וחצי", {S}, dict(date="2026-11-18", **{"from": "19:00"}, duration_min=90, sport="padel", places=["רמת גן|ramat gan"])),
+    ("ברוקח או בהדר יוסף ביום שלישי ב-18", {S}, dict(date="2026-11-17", **{"from": "18:00"}, places=["רוקח|rokach|rokah", "הדר יוסף|hadar yosef"])),
+    ("תבטל את המעקב על רוקח", {STOP}, {}),
+    ("court in herzliya tomorrow morning", {S}, dict(date="2026-11-17", places=["herzliya|הרצליה"])),
+    ("keep checking sportek tel aviv on thursday at 20:00 and ping me when something opens", {W}, dict(date="2026-11-19", **{"from": "20:00"}, places=["sportek|sportech|ספורטק"])),
+    ("מגרש", {"ask:where"}, {}),
+    ("תמצא לי מגרש ליד העבודה מחר", {"ask:where"}, {}),
+    ("יום שישי בבוקר טניס ברעננה", {S}, dict(date="2026-11-20", places=["רעננה|raanana|ra'anana"])),
+    ("מחר בשבע בערב בגבעתיים", {S}, dict(date="2026-11-17", **{"from": "19:00"}, places=["גבעתיים|givatayim|tel_aviv_area|גוש דן"])),
+    ("תעצור את כל המעקבים", {STOP}, {}),
+    ("איזה מעקבים פתוחים לי?", {LIST}, {}),
+    ("לא משנה, תודה", {NONE}, {}),
+    ("פאדל בהרצליה הערב", {S}, dict(date="2026-11-16", sport="padel", places=["הרצליה|herzliya"])),
+    ("מגרש טניס בתל אביב איפשהו ביום שלישי בערב החל מהשעה 18:00", {S}, dict(date="2026-11-17", **{"from": "18:00"}, places=["תל אביב|tel aviv"])),
+    ("תתחיל מעקב על כפר המכביה מחר 7-9 בבוקר", {W}, dict(date="2026-11-17", **{"from": "07:00", "to": "09:00"}, places=["מכביה|maccabiah"])),
+    ("יש מגרש פנוי עכשיו ברמת השרון?", {S}, dict(date="2026-11-16", places=["רמת השרון|ramat hasharon"])),
+    ("book me a court at rokach tomorrow at 8pm", {S}, dict(date="2026-11-17", **{"from": "20:00"}, places=["rokach|רוקח|rokah"])),
+    ("שעתיים טניס בנתניה ביום ראשון", {S, "ask:time"}, dict(date="2026-11-22", duration_min=120, places=["נתניה|netanya"])),
+    ("מעקב: הדר יוסף, יום רביעי, 19-21, שעה", {W}, dict(date="2026-11-18", **{"from": "19:00", "to": "21:00"}, duration_min=60, places=["הדר יוסף|hadar yosef"])),
+    ("תודיע לי אם מתפנה מגרש", {"ask:where"}, {}),
+    ("פיקלבול בהוד השרון מחר אחרי העבודה", {S}, dict(date="2026-11-17", sport="pickleball", places=["הוד השרון|hod hasharon"])),
+    ("צריך מגרש בגוש דן ביום חמישי בין 6 ל-8 בערב", {S}, dict(date="2026-11-19", **{"from": "18:00", "to": "20:00"}, places=["גוש דן|gush dan|tel aviv|תל אביב|tel_aviv_area"])),
+    ("תעקוב על פאדל בנס ציונה בשבת בבוקר", {W}, dict(date="2026-11-21", sport="padel", places=["נס ציונה|ness ziona|nes ziona"])),
+    ("טניס בתל אביב", {"ask:day", "ask:time"}, {}),
+    ("פאדל ברעננה מחר", {S, "ask:time"}, dict(date="2026-11-17", sport="padel", places=["רעננה|raanana|ra'anana"])),
+    ("מגרש בהרצליה", {"ask:day", "ask:time"}, {}),
+    ("בערב בכפר סבא", {S, "ask:day"}, {}),
+    ("תמצא לי מגרש כלשהו בשבוע הבא בשעה 19:00 בתל אביב למשך שעה", {S},
+     dict(dates=['2026-11-22', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-26', '2026-11-27', '2026-11-28'], **{"from": "19:00", "to": "20:00"}, places=["תל אביב|tel aviv"])),
+]

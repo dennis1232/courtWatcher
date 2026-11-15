@@ -63,7 +63,7 @@ def save_token_to_env(token: str, key: str = "LAZUZ_AUTH_TOKEN") -> None:
     env = _env_path()
     lines: list[str] = []
     if env.exists():
-        lines = [l for l in env.read_text().splitlines(keepends=True) if not l.startswith(f"{key}=")]
+        lines = [ln for ln in env.read_text().splitlines(keepends=True) if not ln.startswith(f"{key}=")]
     if lines and not lines[-1].endswith("\n"):
         lines.append("\n")
     lines.append(f"{key}={token}\n")
@@ -102,7 +102,7 @@ async def refresh_token(refresh_token_str: str | None = None) -> str:
     """
     refresh_token_str = refresh_token_str or config.REFRESH_TOKEN
     if not refresh_token_str:
-        raise ValueError("No refresh token available. Run: uv run python scripts/login.py")
+        raise ValueError("No refresh token available. Set LAZUZ_REFRESH_TOKEN in .env")
 
     headers = default_headers()
     headers["authorization"] = f"Bearer {refresh_token_str}"
