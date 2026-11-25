@@ -52,6 +52,11 @@ async def main(output: Path, concurrency: int) -> None:
         console.print("Fetching club list...")
         data = await client.get_club_list()
         clubs = data.get("clubs", [])
+        # club-list?court_type=N is the authoritative "which clubs have this sport" list
+        sport_ids = {ct: {c["id"] for c in (await client.get_club_list(court_type=ct)).get("clubs", [])}
+                     for ct in (3, 6, 9, 10)}
+        for club in clubs:
+            club["court_types"] = [ct for ct, ids in sport_ids.items() if club["id"] in ids]
         console.print(f"Found [green]{len(clubs)}[/] clubs. Fetching pricing rules...\n")
 
         sem = asyncio.Semaphore(concurrency)
@@ -75,11 +80,23 @@ async def main(output: Path, concurrency: int) -> None:
     # Sort by club id for stable output
     results.sort(key=lambda c: c.get("id", 0))
 
+    # Clubs Lazuz stopped listing stay findable as "retired", so a search for them can say why
+    # nothing comes back (e.g. #55 Israel Tennis Center Tel Aviv, צבי נישרי 6) instead of staying silent.
+    previous = json.loads(output.read_text()) if output.exists() else {}
+    live_ids = {c["id"] for c in results}
+    retired = {c["id"]: c for c in previous.get("retired", []) if c["id"] not in live_ids}
+    for c in previous.get("clubs", []):
+        if c["id"] not in live_ids:
+            retired[c["id"]] = {k: c.get(k) for k in ("id", "name", "name_english", "city", "city_english",
+                                                     "address", "address_english", "phone", "website")}
+            retired[c["id"]]["retired_on"] = date.today().isoformat()
+
     output_data = {
         "updated_at": date.today().isoformat(),
         "reference_date": check_date,
         "total": len(results),
         "clubs": results,
+        "retired": sorted(retired.values(), key=lambda c: c["id"]),
     }
 
     output.parent.mkdir(parents=True, exist_ok=True)

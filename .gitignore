@@ -13,3 +13,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Watch logs (bin/find-court --watch)
+*.log

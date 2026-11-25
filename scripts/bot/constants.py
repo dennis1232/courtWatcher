@@ -1,5 +1,10 @@
 """Shared constants for the Lazuz Telegram bot."""
 
+from zoneinfo import ZoneInfo
+
+TZ = ZoneInfo("Asia/Jerusalem")
+SPORT_CODES: dict[str, int] = {"tennis": 3, "football": 6, "padel": 9, "pickleball": 10}
+
 COURT_TYPE_NAMES: dict[int, str] = {3: "Tennis", 6: "Football", 9: "Padel", 10: "Pickleball"}
 COURT_EMOJI:      dict[int, str] = {3: "🎾",     6: "⚽",       9: "🎾",   10: "🏓"}
 
